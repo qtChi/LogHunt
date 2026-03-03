@@ -1,0 +1,1285 @@
+Going through each critique independently before making changes:
+Critique 1 (Overengineering): Not a spec problem — it's an execution warning. The spec is correct. Adding a phased build priority annotation to each class so the implementation order is clear.
+Critique 2 (OCSFEvent unknown fields): Valid. Fix: OCSFEvent validates kwargs against a central OCSFFieldRegistry. Unknown fields raise ValueError at construction, not a warning.
+Critique 3 (DuckDB string scan is naive): Valid but partially. The real enforcement is the read-only DuckDB connection flag — that's parser-level safe. The string scan is a defense-in-depth secondary check. Document both clearly instead of pretending the string scan alone is sufficient.
+Critique 4 (BaselineEngine writes to DuckDB): Valid architectural inconsistency. Fix: DuckDB stays strictly read-only for Parquet. Baselines move to SQLite alongside the audit store. Clean separation: DuckDB = analytical reads, SQLite = all persistent metadata.
+Critique 5 (Metric registration undefined): Fully valid — the biggest real hole. Fix: Add a formal MetricRegistry class specification.
+Critique 6 (Replay isolation undefined): Valid. Fix: Explicit rule — DuckDBLayer and QueryBuilder always exclude replay partitions. Only SigmaEngine.backtest_rule and ReplayEngine.test_rule_against_session can target replay via an explicit flag parameter.
+Critique 7 (CoverageAnalyzer prevalence vague): Valid. Fix: Prevalence score is derived deterministically from enterprise-attack.json — specifically the count of threat groups and software entries that reference each technique. Already in the data, no external heuristic needed.
+Critique 8 (IOCMatcher scale): Valid. Fix: Enrichment capped at 10,000 rows by default, configurable.
+Critique 9 (CI never modified): Valid. Fix: CI changes require a dedicated PR with written justification. Not immutable.
+Critique 10 (Testing surface heavy): Acknowledged, not a spec problem.
+
+LogHunter — Implementation Specification
+Version 1.3 — Final
+Project: github.com/[yourhandle]/loghunter
+Language: Python 3.11+
+License: MIT
+
+1. Objectives
+
+Implement the core business logic of a local detection engineering workbench using test-first development.
+Design Python classes following this specification with enforced contracts, type validation, and documented edge cases.
+Apply input space partitioning to derive systematic unit tests for each class and method using pytest and hypothesis.
+Follow industry GitHub etiquette: feature branches, issues, pull requests, and a Kanban project board throughout all phases of development.
+
+Read the entire specification before writing any code. Where behaviors are unspecified, use the documented judgment decisions in Section 25.
+
+2. GitHub Workflow & Process Requirements
+2.1 Branch Strategy
+Never commit directly to main. The following branch naming conventions are required:
+Branch TypeFormatExampleFeaturefeature/short-descriptionfeature/ocsf-normalizerBugfixfix/short-descriptionfix/baseline-zscore-edgeDocumentationdocs/short-descriptiondocs/ocsf-field-mappingTestingtest/short-descriptiontest/query-intent-validationReleaserelease/vX.Yrelease/v1.0
+main is always deployable. develop is the integration target. All feature branches are cut from develop and merged back via pull request only. Direct pushes to main or develop are never permitted.
+2.2 Issues
+Every unit of work begins as a GitHub Issue before any code is written. Issues must include a clear title, acceptance criteria defining what "done" means, a label from feature / bug / test / docs / performance / security, a milestone matching the development phase, and an assignee.
+2.3 Pull Requests
+Every PR must reference the issue it resolves using Closes #N, include a description of what changed and why, pass all CI checks before merge, and never be self-merged without a minimum 24-hour self-review period. Use squash merges into develop and merge commits from develop into main for releases only.
+2.4 Commit Style
+Write commit messages in imperative mood: Add OCSF normalizer for Zeek conn.log not Added normalizer. One logical change per commit. Never commit print statements, commented-out code, .env files, audit.db, metadata.db, or any file under data/.
+2.5 Kanban Board
+Use GitHub Projects with columns: Backlog → Ready → In Progress → In Review → Done. Nothing moves to Done without a merged PR. Maximum two items In Progress at any time.
+2.6 CI Pipeline
+A GitHub Actions workflow runs on every push to any branch. It executes the full pytest suite, generates a coverage.py HTML branch coverage report, and blocks merges if any test fails or coverage drops below 80%. CI workflow changes require a dedicated PR with written justification — they are not immutable but are treated as infrastructure changes, not feature work.
+
+3. Dependency Specification
+3.1 requirements.txt — Runtime
+python-evtx==0.8.0
+pandas==2.2.x
+pyarrow==15.x
+duckdb==0.10.x
+pydantic==2.x
+instructor==1.x
+ollama==0.2.x
+streamlit==1.x
+pysigma==0.10.x
+ruamel.yaml==0.18.x
+numpy==1.26.x
+scipy==1.12.x
+3.2 requirements-dev.txt — Development and Testing
+pytest==8.x
+pytest-cov==5.x
+pytest-mock==3.x
+hypothesis==6.x
+coverage==7.x
+3.3 pyproject.toml — Coverage Configuration
+toml[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.coverage.run]
+branch = true
+source = ["loghunter"]
+omit = ["tests/*", "scripts/*"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 80
+
+[tool.coverage.html]
+directory = "htmlcov"
+3.4 Running Tests
+bash# Run full test suite
+pytest
+
+# Run with terminal coverage summary
+pytest --cov=loghunter --cov-report=term-missing
+
+# Generate HTML branch coverage report
+pytest --cov=loghunter --cov-report=html
+open htmlcov/index.html
+```
+
+---
+
+## 4. Storage Architecture
+
+This section resolves the DuckDB read-only consistency issue. Two storage backends are used with strictly separated responsibilities.
+
+### 4.1 DuckDB — Analytical Read Layer
+
+DuckDB is used exclusively for analytical queries over Parquet partitions. It operates in read-only mode on the Parquet store. It never stores application state, metadata, or baseline data. This claim is absolute — no component writes to DuckDB except `ParquetWriter`, which writes Parquet files directly via `pyarrow` without going through `DuckDBLayer`.
+
+`DuckDBLayer` exposes only `SELECT` queries. The read-only enforcement has two layers: the DuckDB connection is opened with `read_only=True`, which is a driver-level enforcement, not a string scan. A secondary string scan for forbidden keywords exists as defense-in-depth only and is documented as such — it does not substitute for the connection-level guarantee. Both layers are documented in `docs/ARCHITECTURE.md`.
+
+**DuckDB manages:**
+- Parquet analytical queries (all five OCSF event class partitions)
+- Replay Parquet queries (when explicitly requested via session flag)
+
+### 4.2 SQLite — Metadata and Audit Layer
+
+SQLite manages all persistent application state. A single `metadata.db` file stores all mutable application metadata. The `AuditLogger` writes to this database. `BaselineEngine` writes baseline data to this database. `SigmaEngine` writes the rule store to this database.
+
+**SQLite manages:**
+- Query audit log
+- Ingest audit log
+- Rule audit log and rule store
+- Computed baselines
+- Metric snapshots
+
+This separation is clean: DuckDB is read-only over log data. SQLite is read-write over application metadata. No component crosses this boundary.
+
+### 4.3 Replay Partition Isolation
+
+Replay partitions are physically isolated from production partitions under `{base_path}/replay.parquet/session_id={id}/`. The isolation rules are explicit and enforced at the `DuckDBLayer` level:
+
+- `DuckDBLayer.execute_query` never scans replay partitions unless `include_replay=True` and a `session_id` are explicitly passed.
+- `QueryBuilder.execute` never passes `include_replay=True` under any circumstances. Production queries are always replay-isolated.
+- `SigmaEngine.backtest_rule` passes `include_replay=False` for production backtests and `include_replay=True` with a `session_id` only when called from `ReplayEngine.test_rule_against_session`.
+- `ReplayEngine.test_rule_against_session` is the only public method that produces a replay-scoped backtest.
+
+This means an analyst using the normal investigation UI cannot accidentally query replay data. Replay data only surfaces when explicitly testing a rule against a named replay session.
+
+---
+
+## 5. Architecture & Class Relationships
+```
+OCSFFieldRegistry           ← central schema authority, used by OCSFEvent + OCSFNormalizer
+MetricRegistry              ← central metric definitions, used by BaselineEngine + AnomalyDetector
+
+LogParser (abstract)
+   ├── ZeekParser
+   ├── EVTXParser
+   ├── SyslogParser
+   └── ApacheParser
+          ↓ produces
+       OCSFEvent  ←──────────────────────────── ReplayEngine
+     (validates against OCSFFieldRegistry)
+          ↓
+   OCSFNormalizer ──→ MitreMapper (post-ingest tagging)
+          ↓
+   ParquetWriter (pyarrow direct write)
+          ↓
+   DuckDBLayer (read-only, Parquet only)
+   ↓                                    ↑
+QueryBuilder ←── QueryIntent ←── IntentExtractor (LLM)
+                      ↑
+                [Pydantic + Allowlist]
+
+SQLiteLayer (read-write metadata)
+   ├── AuditLogger    (query, ingest, rule audit)
+   ├── BaselineEngine (baseline storage)
+   └── SigmaEngine    (rule store)
+
+BaselineEngine (reads DuckDB, writes SQLite via SQLiteLayer)
+   ↓ uses MetricRegistry
+AnomalyDetector ──→ AnomalyContext ──→ AnomalyExplainer (LLM)
+
+MitreMapper ←── OCSFNormalizer + CoverageAnalyzer
+CoverageAnalyzer
+IOCMatcher
+ReplayEngine
+MetricsCollector ←── all components
+```
+
+### Test File Mapping
+
+| Source File | Test File |
+|---|---|
+| `loghunter/schema/ocsf_field_registry.py` | `tests/unit/test_ocsf_field_registry.py` |
+| `loghunter/schema/ocsf_event.py` | `tests/unit/test_ocsf_event.py` |
+| `loghunter/schema/metric_registry.py` | `tests/unit/test_metric_registry.py` |
+| `loghunter/ingest/normalizer.py` | `tests/unit/test_ocsf_normalizer.py` |
+| `loghunter/ingest/writer.py` | `tests/unit/test_parquet_writer.py` |
+| `loghunter/ingest/parsers/zeek.py` | `tests/unit/test_log_parsers.py` |
+| `loghunter/engine/duckdb_layer.py` | `tests/unit/test_duckdb_layer.py` |
+| `loghunter/engine/sqlite_layer.py` | `tests/unit/test_sqlite_layer.py` |
+| `loghunter/schema/query_intent.py` | `tests/unit/test_query_intent.py` |
+| `loghunter/engine/query_builder.py` | `tests/unit/test_query_builder.py` |
+| `loghunter/llm/intent_extractor.py` | `tests/unit/test_intent_extractor.py` |
+| `loghunter/engine/baseline.py` | `tests/unit/test_baseline_engine.py` |
+| `loghunter/engine/anomaly.py` | `tests/unit/test_anomaly_detector.py` |
+| `loghunter/llm/anomaly_explainer.py` | `tests/unit/test_anomaly_explainer.py` |
+| `loghunter/engine/sigma_engine.py` | `tests/unit/test_sigma_engine.py` |
+| `loghunter/engine/mitre_mapper.py` | `tests/unit/test_mitre_mapper.py` |
+| `loghunter/engine/coverage.py` | `tests/unit/test_coverage_analyzer.py` |
+| `loghunter/engine/ioc_matcher.py` | `tests/unit/test_ioc_matcher.py` |
+| `loghunter/engine/replay.py` | `tests/unit/test_replay_engine.py` |
+| `loghunter/audit/logger.py` | `tests/unit/test_audit_logger.py` |
+| `loghunter/audit/metrics.py` | `tests/unit/test_metrics_collector.py` |
+
+---
+
+## 6. Specification of Class `OCSFFieldRegistry`
+
+**Build Priority: Phase 1 — must exist before OCSFEvent**
+
+`OCSFFieldRegistry` is the central schema authority for all OCSF field definitions. It is the single source of truth for which fields exist, their types, whether they are required, and which event classes they belong to. Both `OCSFEvent` and `OCSFNormalizer` depend on it. It is loaded once at application startup from a versioned JSON schema file.
+
+**Test file:** `tests/unit/test_ocsf_field_registry.py`
+
+---
+
+#### `OCSFFieldRegistry(schema_path: str)` — Constructor
+
+Loads the OCSF field schema from a JSON file at `schema_path`. The schema defines all valid fields across all supported event classes. Raises `FileNotFoundError` if path does not exist. Raises `ValueError` if the schema JSON is malformed or missing required structure. The registry is immutable after construction — no fields can be added or removed at runtime.
+
+---
+
+#### `get_field_definition(field_path: str) -> FieldDefinition | None`
+
+Returns the `FieldDefinition` for a given dot-notation field path such as `"actor.user.name"`. Returns `None` if the field is not defined in the registry. Never raises on unknown field — `None` is the correct signal for unknown fields and is used by `OCSFEvent` constructor validation.
+
+---
+
+#### `get_fields_for_class(class_uid: int) -> list[FieldDefinition]`
+
+Returns all field definitions applicable to a given event class, including both universal fields and class-specific fields. Raises `ValueError` if `class_uid` is not a supported class. Returns a non-empty list — all supported classes have at least the six universal required fields.
+
+---
+
+#### `get_required_fields(class_uid: int) -> list[str]`
+
+Returns the dot-notation paths of all required fields for a given event class. Raises `ValueError` if `class_uid` is not supported.
+
+---
+
+#### `is_valid_field(field_path: str, class_uid: int) -> bool`
+
+Returns `True` if the field path is a valid, registered field for the given event class. Returns `False` otherwise. Never raises — unknown fields and unsupported classes both return `False`.
+
+---
+
+#### `get_field_type(field_path: str) -> str | None`
+
+Returns the declared type string for a field such as `"VARCHAR"`, `"INTEGER"`, `"TIMESTAMP"`, `"VARCHAR[]"`. Returns `None` if the field is not in the registry.
+
+---
+
+#### `FieldDefinition` — Data Class
+
+A `FieldDefinition` contains: `field_path: str`, `field_type: str`, `required: bool`, `applicable_classes: list[int]`, `description: str`, `source_examples: list[str]`. This is a read-only data class — no setters.
+
+---
+
+## 7. Specification of Class `MetricRegistry`
+
+**Build Priority: Phase 1 — must exist before BaselineEngine**
+
+`MetricRegistry` is the central authority for all baseline metric definitions. It formally defines which metrics exist, which event classes they apply to, how their current values are computed from a window of events, and which entity fields they are grouped by. `BaselineEngine` and `AnomalyDetector` depend on it. This resolves the previously underdefined "registered metrics" dependency.
+
+**Test file:** `tests/unit/test_metric_registry.py`
+
+---
+
+#### `MetricRegistry(metrics_path: str)` — Constructor
+
+Loads metric definitions from a JSON configuration file at `metrics_path`. Raises `FileNotFoundError` if path does not exist. Raises `ValueError` if JSON is malformed or any metric definition is missing required fields. The registry is immutable after construction.
+
+---
+
+#### `get_metric(metric_name: str, class_uid: int) -> MetricDefinition | None`
+
+Returns the `MetricDefinition` for a given metric name and class UID combination. Returns `None` if no such metric is registered. Never raises.
+
+---
+
+#### `get_metrics_for_class(class_uid: int) -> list[MetricDefinition]`
+
+Returns all metric definitions registered for a given event class. Returns an empty list if no metrics are registered for that class. Raises `ValueError` if `class_uid` is not a supported class.
+
+---
+
+#### `compute_current_value(metric_name: str, class_uid: int, events: list[OCSFEvent]) -> float | None`
+
+Computes the current value of a metric from a list of events. The computation logic is defined by the `MetricDefinition.computation` field — a string enum specifying one of the supported aggregation types: `"count"`, `"distinct_field_count"`, `"sum_field"`, `"rate_per_hour"`. Returns `None` if `events` is empty or if the metric cannot be computed from the provided events. Raises `ValueError` if `metric_name` is not registered for `class_uid`. Raises `TypeError` if `events` is `None`.
+
+---
+
+#### `MetricDefinition` — Data Class
+
+A `MetricDefinition` contains: `metric_name: str`, `class_uid: int`, `entity_type: str` (the entity this metric is grouped by, e.g., `"user"`, `"ip"`), `entity_field: str` (the OCSF field path of the entity value, e.g., `"actor.user.name"`), `computation: str` (aggregation type), `target_field: str | None` (field used in computation for `distinct_field_count` and `sum_field`), `description: str`. Read-only data class.
+
+**Built-in metric definitions (loaded from `config/metrics.json`):**
+
+| Metric Name | Class UID | Entity | Computation |
+|---|---|---|---|
+| `auth_count_per_hour` | 6003 | user | rate_per_hour |
+| `auth_distinct_src_ips` | 6003 | user | distinct_field_count (src_endpoint.ip) |
+| `process_exec_count` | 4001 | user | count |
+| `process_distinct_names` | 4001 | user | distinct_field_count (actor.process.name) |
+| `net_connection_count_per_hour` | 3001 | ip | rate_per_hour |
+| `net_distinct_dst_ports` | 3001 | ip | distinct_field_count (dst_endpoint.port) |
+| `net_bytes_out_per_hour` | 3001 | ip | sum_field (network.bytes_out) |
+| `child_process_spawn_rate` | 4001 | process | rate_per_hour |
+| `login_attempt_count` | 6003 | host | count |
+
+---
+
+## 8. Specification of Class `OCSFEvent`
+
+**Build Priority: Phase 1**
+
+`OCSFEvent` is the canonical normalized data object produced by all parsers and consumed by storage, querying, and detection components. It validates all fields against `OCSFFieldRegistry` at construction time. Unknown fields are rejected, not silently stored.
+
+**Test file:** `tests/unit/test_ocsf_event.py`
+
+---
+
+#### `OCSFEvent(class_uid, activity_id, severity_id, time, metadata_log_source, metadata_original_time, registry: OCSFFieldRegistry, **kwargs)` — Constructor
+
+Creates a new `OCSFEvent` instance. `class_uid` must be one of `{1001, 3001, 3002, 4001, 6003}`. `activity_id` must be a non-negative integer. `severity_id` must be an integer in range 0–6. `time` must be a timezone-aware `datetime` in UTC. `metadata_log_source` must be a non-empty string. `metadata_original_time` must be a non-empty string. `registry` must be an initialized `OCSFFieldRegistry` instance. All additional keyword arguments are validated against the registry — any field path not present in `registry.get_fields_for_class(class_uid)` raises `ValueError` immediately. There is no silent storage of unknown fields. This enforces the schema boundary at construction, not downstream. Raises `ValueError` for invalid required argument values or unknown field paths. Raises `TypeError` for `None` passed to any required argument.
+
+---
+
+#### `to_dict() -> dict`
+
+Returns a flat dictionary of all fields using dot-notation keys. `None` fields are included — never omitted. Always contains at minimum the six required fields.
+
+---
+
+#### `get_field(field_path: str) -> any`
+
+Returns the value of a field by dot-notation path. Returns `None` if the field is registered but not set on this event. Raises `ValueError` if `field_path` is not a registered field for this event's class — unknown field access is an error, not a silent miss. Raises `TypeError` if `field_path` is `None`.
+
+---
+
+#### `set_field(field_path: str, value: any) -> None`
+
+Sets a field value. `field_path` must be a registered field for this event's class. Used by `OCSFNormalizer` post-construction to populate derived fields such as `mitre_technique_ids`. Raises `ValueError` if `field_path` is not registered. Raises `TypeError` if `field_path` is `None`.
+
+---
+
+#### `validate() -> list[str]`
+
+Validates the event against OCSF schema rules for its class. Returns a list of error strings. Returns empty list if fully valid. Checks: required fields are not `None`, `severity_id` in 0–6, `time` is timezone-aware, IP fields are valid IPv4 or IPv6 strings, port fields are 0–65535. Does not raise — all errors returned as strings.
+
+---
+
+#### `get_class_uid() -> int`
+
+Returns `class_uid`.
+
+---
+
+#### `get_time() -> datetime`
+
+Returns the UTC `datetime`.
+
+---
+
+#### `__eq__(other: object) -> bool`
+
+Equal if and only if `class_uid`, `time`, `metadata_log_source`, and `metadata_original_time` all match. Returns `False` for non-`OCSFEvent` comparisons — never raises.
+
+---
+
+#### `__repr__() -> str`
+
+Returns `OCSFEvent(class_uid=6003, source=evtx, time=2026-03-01T14:32:11Z)`.
+
+---
+
+## 9. Specification of Abstract Class `LogParser`
+
+**Build Priority: Phase 1**
+
+`LogParser` is the abstract base class for all source-specific parsers.
+
+**Test file:** `tests/unit/test_log_parsers.py`
+
+---
+
+#### `LogParser(source_label: str)` — Constructor
+
+`source_label` must be a non-empty, non-whitespace string. Raises `TypeError` if `None`. Raises `ValueError` if empty or whitespace-only.
+
+---
+
+#### `parse_file(filepath: str) -> list[dict]` — abstract
+
+Parses a log file and returns raw event dictionaries with source field names — no OCSF mapping. Returns empty list if no parseable events. Raises `FileNotFoundError` if path does not exist. Raises `ValueError` if format is unrecognized. Never raises on individual malformed lines — skipped and counted internally.
+
+---
+
+#### `parse_line(raw_line: str) -> dict | None` — abstract
+
+Parses a single raw line. Returns `None` if malformed, comment, or header. Never raises on malformed input.
+
+---
+
+#### `get_source_label() -> str`
+
+Returns the source label.
+
+---
+
+#### `get_parse_stats() -> dict`
+
+Returns `lines_processed`, `lines_parsed`, `lines_skipped`, `files_processed`.
+
+---
+
+### 9.1 Class `ZeekParser(LogParser)`
+
+Supports `conn.log`, `http.log`, `dns.log`, `ssl.log`. Auto-detects type from `_path` field in first valid JSON line. Raises `ValueError` if Zeek log type is not one of the four supported types.
+
+---
+
+### 9.2 Class `EVTXParser(LogParser)`
+
+Parses Windows EVTX using `python-evtx`. Extracts EventID, TimeCreated, SubjectUserName, SubjectUserSid, IpAddress, IpPort, ProcessName, ProcessId, CommandLine, ObjectName. Absent fields returned as `None` — never omitted.
+
+---
+
+### 9.3 Class `SyslogParser(LogParser)`
+
+Supports RFC 3164 and RFC 5424. Auto-detects format from first line. Applies regex extraction of username and source IP from `sshd` and `pam` message bodies.
+
+---
+
+### 9.4 Class `ApacheParser(LogParser)`
+
+Parses Apache and Nginx combined log format. Extracts remote IP, timestamp, HTTP method, URI, status code, response size, referrer, user-agent.
+
+---
+
+## 10. Specification of Class `OCSFNormalizer`
+
+**Build Priority: Phase 1**
+
+`OCSFNormalizer` takes raw parser output and produces validated `OCSFEvent` objects. Unknown fields are dropped and logged — they never reach `OCSFEvent` construction.
+
+**Test file:** `tests/unit/test_ocsf_normalizer.py`
+
+---
+
+#### `OCSFNormalizer(mitre_mapper: MitreMapper, audit_logger: AuditLogger, registry: OCSFFieldRegistry)` — Constructor
+
+All arguments required. Raises `TypeError` if any is `None`. Stateless between calls.
+
+---
+
+#### `normalize(raw_event: dict, source_format: str, class_uid: int) -> OCSFEvent | None`
+
+Applies registered field mapping, drops any fields not present in `registry.get_fields_for_class(class_uid)` (logging drops to audit), constructs `OCSFEvent`, calls `validate()`, applies MITRE mapping, returns validated event. Returns `None` if validation fails. Raises `ValueError` if `source_format` is not registered. Raises `TypeError` if `raw_event` is `None`.
+
+---
+
+#### `normalize_batch(raw_events: list[dict], source_format: str, class_uid: int) -> tuple[list[OCSFEvent], list[dict]]`
+
+Normalizes a list. Returns `(successful_events, failed_raws)`. Never raises on individual failure. Raises `TypeError` if `raw_events` is `None`. Returns `([], [])` for empty input.
+
+---
+
+#### `register_mapping(source_format: str, class_uid: int, mapping: dict) -> None`
+
+Registers a field mapping. Keys are source field names; values are OCSF dot-notation paths. Raises `ValueError` if `mapping` is empty or `class_uid` is unsupported. Raises `TypeError` if any argument is `None`. Replaces existing mapping and logs warning.
+
+---
+
+#### `get_field_mapping(source_format: str, class_uid: int) -> dict`
+
+Returns the registered mapping. Raises `ValueError` if not registered.
+
+---
+
+## 11. Specification of Class `SQLiteLayer`
+
+**Build Priority: Phase 1**
+
+`SQLiteLayer` wraps the SQLite connection used for all persistent application metadata. It is the only write-capable persistent storage layer in the application alongside `ParquetWriter`. DuckDB has no equivalent — DuckDB is strictly read-only.
+
+**Test file:** `tests/unit/test_sqlite_layer.py`
+
+---
+
+#### `SQLiteLayer(db_path: str)` — Constructor
+
+Opens or creates a SQLite database at `db_path` with WAL mode enabled. Creates all required tables on first run. Raises `TypeError` if `db_path` is `None`. Raises `ValueError` if empty.
+
+---
+
+#### `execute_write(sql: str, params: tuple | dict) -> None`
+
+Executes a write statement. Only `INSERT`, `UPDATE`, `DELETE`, and `CREATE` are permitted — `SELECT` raises `ValueError`. All values passed as parameters — zero string interpolation. Raises `TypeError` if either argument is `None`.
+
+---
+
+#### `execute_read(sql: str, params: tuple | dict) -> list[dict]`
+
+Executes a read query. Only `SELECT` is permitted. Returns results as list of row dictionaries. Returns empty list for zero results. Raises `TypeError` if either argument is `None`.
+
+---
+
+#### `close() -> None`
+
+Closes the connection. Subsequent calls to either execute method raise `RuntimeError`. Multiple calls to `close()` are safe no-ops.
+
+---
+
+## 12. Specification of Class `ParquetWriter`
+
+**Build Priority: Phase 1**
+
+`ParquetWriter` writes normalized `OCSFEvent` objects to partitioned Parquet via `pyarrow` directly. It does not go through `DuckDBLayer`.
+
+**Test file:** `tests/unit/test_parquet_writer.py`
+
+---
+
+#### `ParquetWriter(base_path: str, audit_logger: AuditLogger)` — Constructor
+
+`base_path` is the root directory, created if it does not exist. Raises `TypeError` if either argument is `None`. Raises `ValueError` if `base_path` is empty.
+
+---
+
+#### `write_batch(events: list[OCSFEvent], ingest_id: str) -> IngestAuditEntry`
+
+Writes events to `{base_path}/logs.parquet/class_uid={uid}/date={YYYY-MM-DD}/` using `pyarrow`. Appends to existing files. Returns a completed `IngestAuditEntry`. Raises `TypeError` if `events` is `None`. Returns zero-count entry for empty list without writing files. Raises `ValueError` if `ingest_id` is empty or `None`.
+
+---
+
+#### `write_replay_batch(events: list[OCSFEvent], session_id: str) -> None`
+
+Writes to `{base_path}/replay.parquet/session_id={session_id}/`. Fully isolated from production partitions. Raises `ValueError` if `session_id` is empty or `None`. Raises `TypeError` if `events` is `None`.
+
+---
+
+#### `delete_replay_session(session_id: str) -> None`
+
+Deletes all Parquet files for the session. Raises `ValueError` if session does not exist. Raises `TypeError` if `None`.
+
+---
+
+#### `get_partition_info() -> dict`
+
+Returns total event count by class, date range per class, total disk size in bytes, number of partition files. Used by `MetricsCollector`.
+
+---
+
+## 13. Specification of Class `DuckDBLayer`
+
+**Build Priority: Phase 1**
+
+`DuckDBLayer` provides a strictly read-only analytical query interface over Parquet partitions. It never writes anything. It never scans replay partitions unless explicitly instructed via parameters.
+
+**Test file:** `tests/unit/test_duckdb_layer.py`
+
+---
+
+#### `DuckDBLayer(parquet_base_path: str)` — Constructor
+
+Opens DuckDB with `read_only=True` — this is the primary enforcement mechanism. This is a driver-level guarantee, not a string scan. Raises `ValueError` if `parquet_base_path` is empty or does not exist. Raises `TypeError` if `None`.
+
+---
+
+#### `execute_query(sql: str, params: dict, include_replay: bool = False, replay_session_id: str | None = None) -> list[dict]`
+
+Executes a parameterized SELECT query. The DuckDB connection is opened `read_only=True` — write statements will fail at the driver level regardless of this method's content. A secondary keyword scan for `INSERT`, `UPDATE`, `DELETE`, `DROP`, `CREATE` exists as defense-in-depth and is documented as supplementary only — it does not replace the connection-level guarantee. When `include_replay=False` (the default), replay partition directories are excluded from the scan path. When `include_replay=True`, `replay_session_id` must also be provided — only the specified session partition is included. `QueryBuilder` never passes `include_replay=True`. Only `SigmaEngine` and `ReplayEngine` may pass `include_replay=True`. Returns results as list of row dictionaries. Returns empty list for zero results. Raises `TypeError` if `sql` or `params` is `None`. Raises `ValueError` if `sql` is empty, if `include_replay=True` but `replay_session_id` is `None` or empty.
+
+---
+
+#### `get_schema(class_uid: int) -> dict`
+
+Returns field name to DuckDB type string for the given class partition. Returns empty dict if no partition exists. Raises `ValueError` if `class_uid` is unsupported.
+
+---
+
+#### `partition_exists(class_uid: int, date: str) -> bool`
+
+Returns `True` if the partition exists for the given class and `YYYY-MM-DD` date. Raises `TypeError` if either argument is `None`. Raises `ValueError` if `date` is not a valid date string.
+
+---
+
+#### `close() -> None`
+
+Closes the connection. Subsequent `execute_query` calls raise `RuntimeError`. Multiple `close()` calls are safe no-ops.
+
+---
+
+## 14. Specification of Class `QueryIntent` and Nested Models
+
+**Build Priority: Phase 2**
+
+`QueryIntent` is a Pydantic v2 model. It is the only object `QueryBuilder` accepts. Produced exclusively by `IntentExtractor`.
+
+**Test file:** `tests/unit/test_query_intent.py`
+
+---
+
+#### `QueryIntent(event_class, time_range, filters, group_by, order_by, order_dir, limit, include_fields)` — Pydantic Model
+
+`event_class` must be one of `{1001, 3001, 3002, 4001, 6003}`. `time_range` must be a `TimeRange` with `end > start`. `filters` must be a list of `FieldFilter` objects each passing allowlist validation for the event class. `group_by`, `order_by`, `include_fields` must all be in the class allowlist when provided. `limit` must be 1–5000. `order_dir` must be `"asc"` or `"desc"`. Empty `filters` is valid. Raises `ValidationError` on any violation.
+
+---
+
+#### `FieldFilter(field, operator, value)` — Pydantic Model
+
+`field` must be in the class allowlist. `operator` must be one of `{"eq", "neq", "gt", "lt", "gte", "lte", "contains", "startswith", "in", "not_in", "is_null", "is_not_null"}`. `value` must be type-compatible with the field's declared type — integer fields reject string values even if they represent valid numbers, IP fields validated via `ipaddress` module, timestamps validated as ISO 8601. `value` must be `None` only for `is_null` and `is_not_null`. `in` and `not_in` require non-empty list. Raises `ValidationError` on any violation.
+
+---
+
+#### `TimeRange(start, end)` — Pydantic Model
+
+Both must be timezone-aware `datetime` objects. `end` must be strictly after `start`. Maximum 90-day range. Raises `ValidationError` on violation.
+
+---
+
+#### `to_sql_params() -> tuple[str, dict]`
+
+Returns `(sql_template, params_dict)`. All values in params dict — none interpolated into SQL. Raises `RuntimeError` if called pre-validation (cannot occur under normal usage).
+
+---
+
+#### `get_event_class() -> int`
+
+Returns `event_class`.
+
+---
+
+#### `get_filters() -> list[FieldFilter]`
+
+Returns filters list. Returns empty list if none specified.
+
+---
+
+## 15. Specification of Class `QueryBuilder`
+
+**Build Priority: Phase 2**
+
+`QueryBuilder` constructs and executes deterministic, parameterized SQL from validated `QueryIntent` objects. Never accepts raw SQL, user input, or LLM output.
+
+**Test file:** `tests/unit/test_query_builder.py`
+
+---
+
+#### `QueryBuilder(db_layer: DuckDBLayer, audit_logger: AuditLogger, allowlists: dict)` — Constructor
+
+All arguments required. Raises `TypeError` if any is `None`.
+
+---
+
+#### `execute(intent: QueryIntent, session_id: str) -> QueryResult`
+
+Performs final allowlist check on all intent fields. Calls `build_sql`. Executes via `DuckDBLayer` with `include_replay=False` always — this is hardcoded and not configurable via any parameter. Wraps results in `QueryResult`. Writes `QueryAuditEntry` regardless of success or failure. DuckDB errors caught, logged, returned as failed `QueryResult` — never re-raised. Raises `TypeError` if `intent` is not a `QueryIntent`. Raises `ValueError` if `session_id` is empty or `None`.
+
+---
+
+#### `build_sql(intent: QueryIntent) -> tuple[str, dict]`
+
+Builds parameterized SQL without executing. Only `SELECT`, `FROM`, `WHERE`, `GROUP BY`, `ORDER BY`, `LIMIT`. No subqueries, CTEs, or modification statements. Raises `ValueError` if intent references a non-existent partition. Public for test access.
+
+---
+
+#### `validate_against_allowlist(intent: QueryIntent) -> list[str]`
+
+Returns violation strings for any field outside the class allowlist. Returns empty list if compliant. Pure validation.
+
+---
+
+#### `get_execution_metrics() -> dict`
+
+Returns `total_queries`, `success_count`, `failure_count`, `avg_latency_ms`, `p95_latency_ms`.
+
+---
+
+## 16. Specification of Class `IntentExtractor`
+
+**Build Priority: Phase 2**
+
+The only LLM-touching component in the query path.
+
+**Test file:** `tests/unit/test_intent_extractor.py`
+
+---
+
+#### `IntentExtractor(ollama_client, model: str, allowlists: dict)` — Constructor
+
+All arguments required. Raises `TypeError` if any is `None`. Raises `ValueError` if `model` is empty.
+
+---
+
+#### `extract(natural_language_input: str, session_id: str) -> QueryIntent | None`
+
+Calls Ollama with `temperature=0` and static system prompt. Parses JSON. Validates via Pydantic. Returns `QueryIntent` on success. Returns `None` on any failure. Never retries. Logs attempt, raw LLM output, and outcome. Raises `TypeError` if input is `None`. Raises `ValueError` if either string is empty.
+
+---
+
+#### `get_last_failure_reason() -> str | None`
+
+Returns failure reason from most recent failed `extract`. Returns `None` if last call succeeded or `extract` not yet called.
+
+---
+
+#### `get_llm_metrics() -> dict`
+
+Returns `total_calls`, `success_count`, `failure_count`, `json_parse_failure_count`, `validation_failure_count`, `avg_latency_ms`, `p95_latency_ms`.
+
+---
+
+## 17. Specification of Class `BaselineEngine`
+
+**Build Priority: Phase 3**
+
+Computes and stores per-entity behavioral baselines in SQLite. Reads log data from DuckDB. No LLM involvement.
+
+**Test file:** `tests/unit/test_baseline_engine.py`
+
+---
+
+#### `BaselineEngine(db_layer: DuckDBLayer, sqlite_layer: SQLiteLayer, metric_registry: MetricRegistry, config: BaselineConfig)` — Constructor
+
+All arguments required. Raises `TypeError` if any is `None`. Creates the `baselines` table in SQLite on construction if it does not exist. Reads from DuckDB, writes to SQLite. Never writes to DuckDB.
+
+---
+
+#### `BaselineConfig(window_days, min_observations, zscore_threshold, business_hours_weight, first_seen_min_history_days)` — Pydantic Model
+
+`window_days`: positive int, default 7. `min_observations`: positive int, default 30. `zscore_threshold`: positive float, default 3.0. `business_hours_weight`: bool, default `False`. `first_seen_min_history_days`: positive int, default 7. Raises `ValidationError` on invalid values.
+
+---
+
+#### `compute_baseline(entity_type: str, entity_value: str, metric_name: str, class_uid: int) -> Baseline | None`
+
+Looks up `MetricDefinition` from `MetricRegistry`. Queries DuckDB for historical events over `window_days` for this entity. Computes mean and stddev using `MetricRegistry.compute_current_value` applied to each time bucket. Returns `None` if observation count is below `min_observations`. Returns `Baseline` with `mean`, `stddev`, `observation_count`, `window_start`, `window_end`, `computed_at`. Stores result in SQLite baselines table. Raises `ValueError` if `metric_name` is not registered for `class_uid`. Raises `TypeError` if any argument is `None` or empty.
+
+---
+
+#### `compute_all_baselines(class_uid: int) -> dict[str, Baseline]`
+
+Computes baselines for all metrics registered for the class via `MetricRegistry`. Skips combinations below `min_observations`. Returns empty dict if none computed. Raises `ValueError` if `class_uid` is unsupported.
+
+---
+
+#### `get_baseline(entity_type: str, entity_value: str, metric_name: str, class_uid: int) -> Baseline | None`
+
+Retrieves a stored baseline from SQLite. Returns `None` on cache miss. Never raises.
+
+---
+
+#### `invalidate_baseline(entity_type: str, entity_value: str, metric_name: str, class_uid: int) -> None`
+
+Deletes a stored baseline from SQLite. No-op if baseline does not exist. Raises `TypeError` if any argument is `None` or empty.
+
+---
+
+#### `get_registered_metrics(class_uid: int) -> list[str]`
+
+Returns metric names from `MetricRegistry.get_metrics_for_class(class_uid)`. Returns empty list if none. Raises `ValueError` if `class_uid` is unsupported.
+
+---
+
+## 18. Specification of Class `AnomalyDetector`
+
+**Build Priority: Phase 3**
+
+Scores behavioral deviations against baselines. No LLM involvement.
+
+**Test file:** `tests/unit/test_anomaly_detector.py`
+
+---
+
+#### `AnomalyDetector(baseline_engine: BaselineEngine, metric_registry: MetricRegistry, config: BaselineConfig)` — Constructor
+
+All arguments required. Raises `TypeError` if any is `None`.
+
+---
+
+#### `score_entity(entity_type: str, entity_value: str, class_uid: int, current_window_events: list[OCSFEvent]) -> list[AnomalyResult]`
+
+For each metric registered for `class_uid` via `MetricRegistry`, retrieves the baseline, computes current value via `MetricRegistry.compute_current_value`, calculates z-score, calls `score_confidence`. Returns `AnomalyResult` objects for metrics exceeding threshold. Returns empty list if no anomalies or no baselines. Silently skips missing baselines. Raises `TypeError` if any argument is `None`. Raises `ValueError` if `class_uid` is unsupported or `entity_type` is not in `{"user", "ip", "process", "host"}`.
+
+---
+
+#### `detect_first_seen(entity_type: str, entity_value: str, class_uid: int) -> AnomalyResult | None`
+
+Returns `AnomalyResult` with confidence `MEDIUM` if entity is genuinely new within `first_seen_min_history_days`. Returns `None` if seen before or dataset history is insufficient. Raises `TypeError` if any argument is `None` or empty.
+
+---
+
+#### `score_confidence(zscore: float, observation_count: int, corroborating_signals: list[str]) -> AnomalyConfidence`
+
+`LOW`: z-score 3–5, baseline under 50 observations, no corroborating signals. `MEDIUM`: z-score 5–10, or single corroborating signal. `HIGH`: z-score above 10, or first-seen combined with IOC match, or two or more corroborating signals. Raises `ValueError` if `zscore` is not finite. Raises `TypeError` if `corroborating_signals` is `None`.
+
+---
+
+#### `build_anomaly_context(anomaly_result: AnomalyResult, related_events: list[OCSFEvent]) -> AnomalyContext`
+
+Constructs `AnomalyContext` for `AnomalyExplainer`. Populates numeric and enumerated fields only. `sample_activity_ids` is a list of integers from events — no string log content. Raises `TypeError` if either argument is `None`. Raises `ValueError` if `related_events` is empty.
+
+---
+
+## 19. Specification of Class `AnomalyExplainer`
+
+**Build Priority: Phase 3**
+
+Second and only other LLM-touching component. Never receives raw log content.
+
+**Test file:** `tests/unit/test_anomaly_explainer.py`
+
+---
+
+#### `AnomalyExplainer(ollama_client, model: str)` — Constructor
+
+Both required. Raises `TypeError` if `ollama_client` is `None`. Raises `ValueError` if `model` is empty.
+
+---
+
+#### `explain(context: AnomalyContext, session_id: str) -> str | None`
+
+Serializes `AnomalyContext` to JSON and injects as data block into static explanation system prompt. Calls Ollama with `temperature=0.3`. Returns explanation string on success. Returns `None` on failure — never raises. Static system prompt is immutable at runtime. Raises `TypeError` if `context` is `None`. Raises `ValueError` if `session_id` is empty or `None`.
+
+---
+
+#### `get_llm_metrics() -> dict`
+
+Returns `total_calls`, `success_count`, `failure_count`, `avg_latency_ms`.
+
+---
+
+## 20. Specification of Class `SigmaEngine`
+
+**Build Priority: Phase 4**
+
+Manages the complete Sigma rule lifecycle. Rule store persisted in SQLite.
+
+**Test file:** `tests/unit/test_sigma_engine.py`
+
+---
+
+#### `SigmaEngine(db_layer: DuckDBLayer, sqlite_layer: SQLiteLayer, audit_logger: AuditLogger, ollama_client, model: str)` — Constructor
+
+All required. Raises `TypeError` if any is `None`. Raises `ValueError` if `model` is empty. Creates rule store table in SQLite on construction if it does not exist.
+
+---
+
+#### `generate_draft(pattern_description: str, session_id: str) -> str`
+
+Calls LLM with static Sigma generation system prompt. Returns raw YAML string without validating or storing. Pattern description is injected as data content, not instruction. Raises `TypeError` if either is `None`. Raises `ValueError` if either is empty.
+
+---
+
+#### `validate_rule(yaml_string: str) -> tuple[bool, list[str]]`
+
+Parses with `ruamel.yaml`, validates with PySigma, checks detection field references against OCSF allowlist. Returns `(True, [])` or `(False, [errors])`. Never raises on invalid YAML. Raises `TypeError` if `None`. Raises `ValueError` if empty.
+
+---
+
+#### `backtest_rule(yaml_string: str, window_days: int, originating_event: OCSFEvent | None, replay_session_id: str | None = None) -> BacktestResult`
+
+Converts rule to DuckDB filter via PySigma. When `replay_session_id` is `None`, executes against production partition for the rule's mapped class only with `include_replay=False`. When `replay_session_id` is provided, executes against that replay session only with `include_replay=True`. Returns `BacktestResult` with `match_count`, `match_rate`, `distinct_entities_matched`, `time_distribution`, `sample_matches` (first 10), `originating_event_matched` (boolean or `None`). Raises `ValueError` if rule not validated or `window_days` less than 1. Raises `TypeError` if `yaml_string` is `None`.
+
+---
+
+#### `evaluate_rule_quality(backtest_result: BacktestResult) -> list[str]`
+
+Returns warnings for: match rate above 15% (high FP risk), match count below 5 (too narrow), originating event not matched (ineffective), backtest window below 7 days (insufficient history). Empty list if no warnings. Non-blocking. Raises `TypeError` if `None`.
+
+---
+
+#### `store_rule(yaml_string: str, backtest_result: BacktestResult, session_id: str) -> str`
+
+Stores as unconfirmed draft in SQLite. Computes SHA-256 of YAML. Assigns UUID. Sets `version=1`, `analyst_confirmed=False`. Returns `rule_id`. Raises `ValueError` if not validated and backtested.
+
+---
+
+#### `confirm_rule(rule_id: str, session_id: str) -> None`
+
+Sets `analyst_confirmed=True`, `confirmed_at` to current UTC. Required gate before coverage analysis counts this rule. Raises `ValueError` if `rule_id` does not exist.
+
+---
+
+#### `update_rule(rule_id: str, new_yaml_string: str, session_id: str) -> str`
+
+Creates new version with incremented `version`. Marks prior as `superseded_by` new `rule_id`. Prior version preserved in SQLite. Returns new `rule_id`. Raises `ValueError` if `rule_id` does not exist.
+
+---
+
+#### `export_rule(rule_id: str, export_format: str) -> str`
+
+`export_format` must be one of `{"sigma", "elastic", "splunk", "qradar", "chronicle"}`. Only confirmed rules exportable — unconfirmed raises `ValueError`. Records `exported_at` and `export_format`. Returns converted rule string. Raises `ValueError` if unsupported format or rule not confirmed.
+
+---
+
+#### `get_all_rules(confirmed_only: bool = False) -> list[RuleAuditEntry]`
+
+Returns latest version of each rule. Superseded versions excluded by default. Returns empty list if none.
+
+---
+
+## 21. Specification of Class `MitreMapper`
+
+**Build Priority: Phase 1**
+
+Deterministic ATT&CK technique mapping. No LLM.
+
+**Test file:** `tests/unit/test_mitre_mapper.py`
+
+---
+
+#### `MitreMapper(patterns_path: str)` — Constructor
+
+Loads pattern rules JSON from `patterns_path`. Raises `FileNotFoundError` if not found. Raises `ValueError` if malformed or any rule missing required fields. Immutable after construction.
+
+---
+
+#### `map_event(event: OCSFEvent) -> list[str]`
+
+Returns list of matched technique IDs. Empty list if no match. Never raises on non-match. Raises `TypeError` if `event` is `None`.
+
+---
+
+#### `map_batch(events: list[OCSFEvent]) -> dict[int, list[str]]`
+
+Maps list of events. Returns index-to-techniques dict. Raises `TypeError` if `events` is `None`. Returns empty dict for empty input.
+
+---
+
+#### `get_techniques_for_class(class_uid: int) -> list[str]`
+
+Returns all technique IDs that could match for the class. Raises `ValueError` if `class_uid` unsupported.
+
+---
+
+#### `get_pattern_count() -> int`
+
+Returns total loaded pattern count.
+
+---
+
+## 22. Specification of Class `CoverageAnalyzer`
+
+**Build Priority: Phase 5**
+
+Maps confirmed Sigma rules against ATT&CK Enterprise matrix. ATT&CK prevalence scoring is derived deterministically from `enterprise-attack.json` — specifically the count of threat group entries and software entries that reference each technique. This data is present in the pinned `enterprise-attack.json` file and requires no external heuristic or custom weighting.
+
+**Test file:** `tests/unit/test_coverage_analyzer.py`
+
+---
+
+#### `CoverageAnalyzer(attack_data_path: str, sigma_engine: SigmaEngine, db_layer: DuckDBLayer)` — Constructor
+
+Loads ATT&CK Enterprise dataset. Computes prevalence scores by counting `intrusion-set` and `malware`/`tool` references per technique in the dataset. These scores are computed once at construction and stored as a `dict[str, int]` mapping technique ID to reference count. All arguments required. Raises `FileNotFoundError` if data file not found. Raises `TypeError` if any object argument is `None`.
+
+---
+
+#### `compute_coverage() -> CoverageReport`
+
+Retrieves confirmed rules from `SigmaEngine`, extracts technique IDs, maps against ATT&CK. Returns `CoverageReport` with `covered_techniques`, `draft_techniques`, `gap_techniques`, `coverage_percentage`. Zero coverage is valid.
+
+---
+
+#### `prioritize_gaps(coverage_report: CoverageReport) -> list[GapEntry]`
+
+Returns ordered `GapEntry` list. Priority tier 1: technique has no rule coverage AND has appeared in ingested log data (detected by querying DuckDB `mitre_technique_ids` field). Priority tier 2: no coverage AND ATT&CK prevalence score above the median score across all techniques. Priority tier 3: no coverage AND no log activity AND prevalence at or below median. Ties within tiers are broken by prevalence score descending. Raises `TypeError` if `coverage_report` is `None`.
+
+---
+
+#### `get_heatmap_data() -> dict`
+
+Returns technique ID to `{"covered", "draft", "gap"}` mapping for the Streamlit heatmap component.
+
+---
+
+## 23. Specification of Class `IOCMatcher`
+
+**Build Priority: Phase 5**
+
+Offline IOC enrichment. Runs post-query. Capped at 10,000 rows by default.
+
+**Test file:** `tests/unit/test_ioc_matcher.py`
+
+---
+
+#### `IOCMatcher(ioc_dir: str, max_enrich_rows: int = 10000)` — Constructor
+
+Loads IOC files from `ioc_dir`. Supports MISP JSON, abuse.ch CSV, plain-text. `max_enrich_rows` must be a positive integer. Raises `ValueError` if `ioc_dir` does not exist or `max_enrich_rows` is less than 1. Raises `TypeError` if `None`. Empty directory is valid — zero IOCs.
+
+---
+
+#### `enrich(events: list[OCSFEvent]) -> list[IOCMatch]`
+
+Checks events against loaded IOCs up to `max_enrich_rows`. If `len(events)` exceeds `max_enrich_rows`, only the first `max_enrich_rows` events are enriched and a warning is logged. Returns list of `IOCMatch` objects with event reference, matched field path, matched IOC value, source list name. Returns empty list if no matches. Raises `TypeError` if `events` is `None`.
+
+---
+
+#### `reload_iocs() -> int`
+
+Reloads all IOC files. Returns total IOC count.
+
+---
+
+#### `get_ioc_stats() -> dict`
+
+Returns `total_count`, `by_type`, `source_files`, `max_enrich_rows`.
+
+---
+
+## 24. Specification of Class `AuditLogger`
+
+**Build Priority: Phase 1**
+
+Append-only SQLite audit writer. Cannot be cleared via any application interface.
+
+**Test file:** `tests/unit/test_audit_logger.py`
+
+---
+
+#### `AuditLogger(sqlite_layer: SQLiteLayer)` — Constructor
+
+Takes an initialized `SQLiteLayer`. Creates audit tables if they do not exist. Raises `TypeError` if `None`.
+
+---
+
+#### `log_query(entry: QueryAuditEntry) -> None`
+
+Appends query audit entry. Never raises on write failure — logs to stderr. Raises `TypeError` if `entry` is `None`.
+
+---
+
+#### `log_ingest(entry: IngestAuditEntry) -> None`
+
+Appends ingest audit entry. Raises `TypeError` if `None`.
+
+---
+
+#### `log_rule_event(entry: RuleAuditEntry) -> None`
+
+Appends rule lifecycle entry. Raises `TypeError` if `None`.
+
+---
+
+#### `get_query_history(session_id: str | None, limit: int = 100) -> list[QueryAuditEntry]`
+
+Returns entries optionally filtered by session. Returns empty list if none. Raises `ValueError` if `limit` is less than 1.
+
+---
+
+#### `get_ingest_history(limit: int = 50) -> list[IngestAuditEntry]`
+
+Returns most recent ingest entries. Returns empty list if none.
+
+---
+
+## 25. Specification of Class `MetricsCollector`
+
+**Build Priority: Phase 5**
+
+Aggregates performance and reliability statistics for the Metrics dashboard tab.
+
+**Test file:** `tests/unit/test_metrics_collector.py`
+
+---
+
+#### `MetricsCollector(audit_logger, db_layer, parquet_writer, query_builder, intent_extractor, anomaly_explainer)` — Constructor
+
+All required. Raises `TypeError` if any is `None`.
+
+---
+
+#### `collect() -> MetricsSnapshot`
+
+Gathers metrics from all components. Includes total events by class, query success rate and latency, intent extraction success rate, anomaly explanation metrics, Sigma rule counts and coverage percentage, dataset size on disk. Never raises — failed components contribute `None` values.
+
+---
+
+#### `get_snapshot() -> MetricsSnapshot`
+
+Returns most recent `MetricsSnapshot` without recomputing. Returns `None` if `collect()` not yet called.
+
+---
+
+## 26. Specification of Class `ReplayEngine`
+
+**Build Priority: Phase 5**
+
+Manages synthetic log injection. All replay partitions are isolated and explicitly excluded from all normal queries.
+
+**Test file:** `tests/unit/test_replay_engine.py`
+
+---
+
+#### `ReplayEngine(normalizer: OCSFNormalizer, parquet_writer: ParquetWriter)` — Constructor
+
+Both required. Raises `TypeError` if either is `None`.
+
+---
+
+#### `load_session(filepath: str, session_label: str, source_format: str, class_uid: int) -> ReplaySession`
+
+Parses, normalizes, and writes to isolated replay partition. Returns `ReplaySession` with session ID, label, event count by class, load timestamp. Raises `FileNotFoundError` if path not found. Raises `ValueError` for empty label, unregistered format, or unsupported class. Raises `TypeError` if any argument is `None`.
+
+---
+
+#### `list_sessions() -> list[ReplaySession]`
+
+Returns all loaded sessions. Returns empty list if none.
+
+---
+
+#### `delete_session(session_id: str) -> None`
+
+Deletes replay Parquet files via `ParquetWriter.delete_replay_session`. Raises `ValueError` if session does not exist. Raises `TypeError` if `None`.
+
+---
+
+#### `test_rule_against_session(yaml_string: str, session_id: str) -> BacktestResult`
+
+Calls `SigmaEngine.backtest_rule` with `replay_session_id=session_id`. Executes against replay partition only — never touches production data. Raises `ValueError` if session does not exist or rule not validated. Raises `TypeError` if either argument is `None`.
+
+---
+
+## 27. Unspecified Behavior — Judgment Decisions
+
+All decisions below are documented in `DECISIONS.md` in the repository root.
+
+**Empty string vs. None.** All methods treat empty strings and whitespace-only strings identically to `None` for required string arguments. Void methods and constructors raise `ValueError`. Non-void methods return `None` or `False`.
+
+**Duplicate events on ingest.** Both events are written. Deduplication is query-time, not ingest-time. Full source fidelity is preserved.
+
+**LLM unavailability.** If Ollama is not running, `IntentExtractor.extract` and `AnomalyExplainer.explain` return `None` and log the failure. The rest of the application is fully functional. UI surfaces a warning.
+
+**Baseline below min_observations.** `compute_baseline` returns `None`. A partial baseline is more dangerous than no baseline. Suppression is correct.
+
+**Rule versioning.** `update_rule` never deletes prior versions. All versions are preserved in SQLite. `get_all_rules` returns latest version per rule by default.
+
+**MITRE pattern matching on absent fields.** A `None` field never satisfies a condition. Absence of a field is not a wildcard.
+
+**CoverageAnalyzer with no confirmed rules.** `compute_coverage` returns `coverage_percentage=0.0` with all techniques in `gap_techniques`. Valid state on fresh installation.
+
+**IOCMatcher row cap.** If events exceed `max_enrich_rows`, only the first `max_enrich_rows` are enriched. The cap is logged as a warning. Analyst can lower their query limit or raise the cap in Settings.
+
+**DuckDB read-only enforcement.** The primary enforcement is the `read_only=True` connection flag at the driver level. The secondary keyword string scan is defense-in-depth and is documented as supplementary only. Both are described in `docs/LLM_SECURITY_MODEL.md` and `docs/ARCHITECTURE.md`.
+
+---
+
+## 28. Phased Build Priority
+
+To prevent scope collapse, each class carries a build phase. Nothing in a later phase is started until all earlier phases are fully tested and merged.
+
+| Phase | Classes | Goal |
+|---|---|---|
+| 1 | `OCSFFieldRegistry`, `MetricRegistry`, `OCSFEvent`, `LogParser` subclasses, `OCSFNormalizer`, `SQLiteLayer`, `ParquetWriter`, `DuckDBLayer`, `MitreMapper`, `AuditLogger` | Data pipeline working end-to-end with real logs |
+| 2 | `QueryIntent`, `QueryBuilder`, `IntentExtractor` | Investigation engine working without LLM, then with |
+| 3 | `BaselineConfig`, `BaselineEngine`, `AnomalyDetector`, `AnomalyExplainer` | Anomaly detection working against real ingested data |
+| 4 | `SigmaEngine` | Full rule lifecycle working against Phase 1 data |
+| 5 | `CoverageAnalyzer`, `IOCMatcher`, `ReplayEngine`, `MetricsCollector` | Offensive awareness and operational observability |
+
+---
+
+## 29. Repository Structure
+```
+loghunter/
+├── app.py
+├── requirements.txt
+├── requirements-dev.txt
+├── pyproject.toml
+├── docker-compose.yml
+├── Dockerfile
+├── DECISIONS.md
+│
+├── loghunter/
+│   ├── config.py
+│   ├── ingest/
+│   │   ├── normalizer.py
+│   │   ├── writer.py
+│   │   └── parsers/
+│   │       ├── base.py
+│   │       ├── zeek.py
+│   │       ├── evtx.py
+│   │       ├── syslog.py
+│   │       └── apache.py
+│   ├── schema/
+│   │   ├── ocsf_field_registry.py
+│   │   ├── ocsf_event.py
+│   │   ├── metric_registry.py
+│   │   ├── query_intent.py
+│   │   └── audit_models.py
+│   ├── engine/
+│   │   ├── duckdb_layer.py
+│   │   ├── sqlite_layer.py
+│   │   ├── query_builder.py
+│   │   ├── baseline.py
+│   │   ├── anomaly.py
+│   │   ├── sigma_engine.py
+│   │   ├── mitre_mapper.py
+│   │   ├── coverage.py
+│   │   ├── ioc_matcher.py
+│   │   └── replay.py
+│   ├── llm/
+│   │   ├── intent_extractor.py
+│   │   ├── anomaly_explainer.py
+│   │   └── prompts.py
+│   ├── audit/
+│   │   ├── logger.py
+│   │   └── metrics.py
+│   └── ui/
+│       ├── tabs/
+│       │   ├── investigate.py
+│       │   ├── hunt.py
+│       │   ├── rules.py
+│       │   ├── coverage.py
+│       │   ├── metrics.py
+│       │   └── settings.py
+│       └── components/
+│           ├── results_table.py
+│           ├── timeline_chart.py
+│           └── attack_heatmap.py
+│
+├── config/
+│   ├── mitre_patterns.json
+│   ├── metrics.json
+│   ├── ocsf_schema.json
+│   └── enterprise-attack.json
+│
+├── data/
+│   ├── logs.parquet/
+│   ├── replay.parquet/
+│   └── sample/
+│
+├── rules/
+│   ├── confirmed/
+│   └── drafts/
+│
+├── iocs/
+│
+├── scripts/
+│   ├── init_db.py
+│   ├── ingest.py
+│   └── benchmark.py
+│
+├── tests/
+│   ├── unit/
+│   │   ├── test_ocsf_field_registry.py
+│   │   ├── test_ocsf_event.py
+│   │   ├── test_metric_registry.py
+│   │   ├── test_log_parsers.py
+│   │   ├── test_ocsf_normalizer.py
+│   │   ├── test_parquet_writer.py
+│   │   ├── test_duckdb_layer.py
+│   │   ├── test_sqlite_layer.py
+│   │   ├── test_query_intent.py
+│   │   ├── test_query_builder.py
+│   │   ├── test_intent_extractor.py
+│   │   ├── test_baseline_engine.py
+│   │   ├── test_anomaly_detector.py
+│   │   ├── test_anomaly_explainer.py
+│   │   ├── test_sigma_engine.py
+│   │   ├── test_mitre_mapper.py
+│   │   ├── test_coverage_analyzer.py
+│   │   ├── test_ioc_matcher.py
+│   │   ├── test_audit_logger.py
+│   │   ├── test_metrics_collector.py
+│   │   └── test_replay_engine.py
+│   ├── integration/
+│   │   ├── test_ingest_pipeline.py
+│   │   ├── test_investigation_pipeline.py
+│   │   ├── test_anomaly_pipeline.py
+│   │   └── test_sigma_pipeline.py
+│   └── security/
+│       ├── test_injection_hardening.py
+│       ├── test_allowlist_enforcement.py
+│       └── test_readonly_enforcement.py
+│
+└── docs/
+    ├── ARCHITECTURE.md
+    ├── OCSF_MAPPING.md
+    ├── LLM_SECURITY_MODEL.md
+    ├── BENCHMARKS.md
+    ├── ISP.md
+    ├── COVERAGE.md
+    └── CONTRIBUTING.md
+
+LogHunter is a personal portfolio project. MIT License. MITRE ATT&CK content used under CC BY 4.0. Not affiliated with any employer or institution.
