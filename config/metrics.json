@@ -1,0 +1,86 @@
+{
+    "version": "1.0.0",
+    "metrics": [
+      {
+        "metric_name": "auth_count_per_hour",
+        "class_uid": 6003,
+        "entity_type": "user",
+        "entity_field": "actor.user.name",
+        "computation": "rate_per_hour",
+        "target_field": null,
+        "description": "Authentication events per hour for a given user."
+      },
+      {
+        "metric_name": "auth_distinct_src_ips",
+        "class_uid": 6003,
+        "entity_type": "user",
+        "entity_field": "actor.user.name",
+        "computation": "distinct_field_count",
+        "target_field": "src_endpoint.ip",
+        "description": "Number of distinct source IPs seen authenticating as a given user."
+      },
+      {
+        "metric_name": "process_exec_count",
+        "class_uid": 4001,
+        "entity_type": "user",
+        "entity_field": "actor.user.name",
+        "computation": "count",
+        "target_field": null,
+        "description": "Total process execution events for a given user."
+      },
+      {
+        "metric_name": "process_distinct_names",
+        "class_uid": 4001,
+        "entity_type": "user",
+        "entity_field": "actor.user.name",
+        "computation": "distinct_field_count",
+        "target_field": "actor.process.name",
+        "description": "Number of distinct process names executed by a given user."
+      },
+      {
+        "metric_name": "net_connection_count_per_hour",
+        "class_uid": 3001,
+        "entity_type": "ip",
+        "entity_field": "src_endpoint.ip",
+        "computation": "rate_per_hour",
+        "target_field": null,
+        "description": "Network connection events per hour originating from a given source IP."
+      },
+      {
+        "metric_name": "net_distinct_dst_ports",
+        "class_uid": 3001,
+        "entity_type": "ip",
+        "entity_field": "src_endpoint.ip",
+        "computation": "distinct_field_count",
+        "target_field": "dst_endpoint.port",
+        "description": "Number of distinct destination ports contacted by a given source IP."
+      },
+      {
+        "metric_name": "net_bytes_out_per_hour",
+        "class_uid": 3001,
+        "entity_type": "ip",
+        "entity_field": "src_endpoint.ip",
+        "computation": "sum_field",
+        "target_field": "network.bytes_out",
+        "description": "Total bytes sent per hour from a given source IP."
+      },
+      {
+        "metric_name": "child_process_spawn_rate",
+        "class_uid": 4001,
+        "entity_type": "process",
+        "entity_field": "actor.process.name",
+        "computation": "rate_per_hour",
+        "target_field": null,
+        "description": "Rate at which a given parent process spawns child processes per hour."
+      },
+      {
+        "metric_name": "login_attempt_count",
+        "class_uid": 6003,
+        "entity_type": "host",
+        "entity_field": "src_endpoint.hostname",
+        "computation": "count",
+        "target_field": null,
+        "description": "Total login attempt events originating from a given host."
+      }
+    ]
+  }

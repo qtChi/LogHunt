@@ -1,0 +1,374 @@
+{
+    "version": "1.1.0",
+    "supported_classes": [1001, 3001, 3002, 4001, 6003],
+    "fields": [
+      {
+        "field_path": "class_uid",
+        "field_type": "INTEGER",
+        "required": true,
+        "applicable_classes": [1001, 3001, 3002, 4001, 6003],
+        "description": "The unique identifier of the OCSF event class.",
+        "source_examples": ["class_uid"]
+      },
+      {
+        "field_path": "activity_id",
+        "field_type": "INTEGER",
+        "required": true,
+        "applicable_classes": [1001, 3001, 3002, 4001, 6003],
+        "description": "The normalized identifier of the activity that triggered the event.",
+        "source_examples": ["activity_id"]
+      },
+      {
+        "field_path": "severity_id",
+        "field_type": "INTEGER",
+        "required": true,
+        "applicable_classes": [1001, 3001, 3002, 4001, 6003],
+        "description": "The normalized severity of the event (0-6).",
+        "source_examples": ["severity_id", "Level"]
+      },
+      {
+        "field_path": "time",
+        "field_type": "TIMESTAMP",
+        "required": true,
+        "applicable_classes": [1001, 3001, 3002, 4001, 6003],
+        "description": "The normalized UTC timestamp of when the event occurred.",
+        "source_examples": ["TimeCreated", "ts", "@timestamp"]
+      },
+      {
+        "field_path": "metadata.log_source",
+        "field_type": "VARCHAR",
+        "required": true,
+        "applicable_classes": [1001, 3001, 3002, 4001, 6003],
+        "description": "The source system or log format that produced this event.",
+        "source_examples": ["_path", "source", "log_source"]
+      },
+      {
+        "field_path": "metadata.original_time",
+        "field_type": "VARCHAR",
+        "required": true,
+        "applicable_classes": [1001, 3001, 3002, 4001, 6003],
+        "description": "The original unparsed timestamp string from the source log.",
+        "source_examples": ["TimeCreated", "ts", "time"]
+      },
+      {
+        "field_path": "metadata.version",
+        "field_type": "VARCHAR",
+        "required": false,
+        "applicable_classes": [1001, 3001, 3002, 4001, 6003],
+        "description": "The OCSF schema version used to normalize this event.",
+        "source_examples": []
+      },
+      {
+        "field_path": "mitre_technique_ids",
+        "field_type": "VARCHAR[]",
+        "required": false,
+        "applicable_classes": [1001, 3001, 3002, 4001, 6003],
+        "description": "MITRE ATT&CK technique IDs matched by MitreMapper post-normalization.",
+        "source_examples": []
+      },
+      {
+        "field_path": "src_endpoint.ip",
+        "field_type": "VARCHAR",
+        "required": false,
+        "applicable_classes": [3001, 3002, 6003],
+        "description": "The source IP address.",
+        "source_examples": ["id.orig_h", "IpAddress", "c-ip"]
+      },
+      {
+        "field_path": "src_endpoint.port",
+        "field_type": "INTEGER",
+        "required": false,
+        "applicable_classes": [3001, 3002],
+        "description": "The source port number.",
+        "source_examples": ["id.orig_p"]
+      },
+      {
+        "field_path": "src_endpoint.hostname",
+        "field_type": "VARCHAR",
+        "required": false,
+        "applicable_classes": [3001, 3002, 6003],
+        "description": "The source hostname.",
+        "source_examples": ["hostname", "ComputerName"]
+      },
+      {
+        "field_path": "dst_endpoint.ip",
+        "field_type": "VARCHAR",
+        "required": false,
+        "applicable_classes": [3001, 3002],
+        "description": "The destination IP address.",
+        "source_examples": ["id.resp_h"]
+      },
+      {
+        "field_path": "dst_endpoint.port",
+        "field_type": "INTEGER",
+        "required": false,
+        "applicable_classes": [3001, 3002],
+        "description": "The destination port number.",
+        "source_examples": ["id.resp_p"]
+      },
+      {
+        "field_path": "dst_endpoint.hostname",
+        "field_type": "VARCHAR",
+        "required": false,
+        "applicable_classes": [3001, 3002],
+        "description": "The destination hostname.",
+        "source_examples": ["server_name"]
+      },
+      {
+        "field_path": "network.protocol",
+        "field_type": "VARCHAR",
+        "required": false,
+        "applicable_classes": [3001, 3002],
+        "description": "The network protocol (e.g. tcp, udp).",
+        "source_examples": ["proto", "transport"]
+      },
+      {
+        "field_path": "network.bytes_out",
+        "field_type": "INTEGER",
+        "required": false,
+        "applicable_classes": [3001],
+        "description": "Total bytes sent from source to destination.",
+        "source_examples": ["orig_bytes", "sc-bytes"]
+      },
+      {
+        "field_path": "network.bytes_in",
+        "field_type": "INTEGER",
+        "required": false,
+        "applicable_classes": [3001],
+        "description": "Total bytes received by source from destination.",
+        "source_examples": ["resp_bytes", "cs-bytes"]
+      },
+      {
+        "field_path": "network.duration",
+        "field_type": "INTEGER",
+        "required": false,
+        "applicable_classes": [3001],
+        "description": "Connection duration in milliseconds.",
+        "source_examples": ["duration"]
+      },
+      {
+        "field_path": "http.request.method",
+        "field_type": "VARCHAR",
+        "required": false,
+        "applicable_classes": [3002],
+        "description": "The HTTP request method.",
+        "source_examples": ["method", "cs-method"]
+      },
+      {
+        "field_path": "http.request.url.path",
+        "field_type": "VARCHAR",
+        "required": false,
+        "applicable_classes": [3002],
+        "description": "The HTTP request URI path.",
+        "source_examples": ["uri", "cs-uri-stem"]
+      },
+      {
+        "field_path": "http.response.code",
+        "field_type": "INTEGER",
+        "required": false,
+        "applicable_classes": [3002],
+        "description": "The HTTP response status code.",
+        "source_examples": ["status_code", "sc-status"]
+      },
+      {
+        "field_path": "http.response.length",
+        "field_type": "INTEGER",
+        "required": false,
+        "applicable_classes": [3002],
+        "description": "The HTTP response body length in bytes.",
+        "source_examples": ["response_body_len", "sc-bytes"]
+      },
+      {
+        "field_path": "http.request.referrer",
+        "field_type": "VARCHAR",
+        "required": false,
+        "applicable_classes": [3002],
+        "description": "The HTTP Referer header value.",
+        "source_examples": ["referrer", "cs-referer"]
+      },
+      {
+        "field_path": "http.user_agent",
+        "field_type": "VARCHAR",
+        "required": false,
+        "applicable_classes": [3002],
+        "description": "The HTTP User-Agent header value.",
+        "source_examples": ["user_agent", "cs-user-agent"]
+      },
+      {
+        "field_path": "actor.user.name",
+        "field_type": "VARCHAR",
+        "required": false,
+        "applicable_classes": [4001, 6003],
+        "description": "The username of the actor performing the activity.",
+        "source_examples": ["SubjectUserName", "user.name"]
+      },
+      {
+        "field_path": "actor.user.uid",
+        "field_type": "VARCHAR",
+        "required": false,
+        "applicable_classes": [4001, 6003],
+        "description": "The UID or SID of the acting user.",
+        "source_examples": ["SubjectUserSid", "uid"]
+      },
+      {
+        "field_path": "actor.process.name",
+        "field_type": "VARCHAR",
+        "required": false,
+        "applicable_classes": [4001],
+        "description": "The name of the process that initiated the activity.",
+        "source_examples": ["ProcessName", "comm"]
+      },
+      {
+        "field_path": "actor.process.pid",
+        "field_type": "INTEGER",
+        "required": false,
+        "applicable_classes": [4001],
+        "description": "The process ID of the actor process.",
+        "source_examples": ["ProcessId", "pid"]
+      },
+      {
+        "field_path": "actor.process.cmd_line",
+        "field_type": "VARCHAR",
+        "required": false,
+        "applicable_classes": [4001],
+        "description": "The full command line of the actor process.",
+        "source_examples": ["CommandLine", "cmdline"]
+      },
+      {
+        "field_path": "process.name",
+        "field_type": "VARCHAR",
+        "required": false,
+        "applicable_classes": [4001],
+        "description": "The name of the target process.",
+        "source_examples": ["TargetProcessName", "process.name"]
+      },
+      {
+        "field_path": "process.pid",
+        "field_type": "INTEGER",
+        "required": false,
+        "applicable_classes": [4001],
+        "description": "The PID of the target process.",
+        "source_examples": ["TargetProcessId"]
+      },
+      {
+        "field_path": "process.cmd_line",
+        "field_type": "VARCHAR",
+        "required": false,
+        "applicable_classes": [4001],
+        "description": "The full command line of the target process.",
+        "source_examples": ["TargetCommandLine"]
+      },
+      {
+        "field_path": "file.name",
+        "field_type": "VARCHAR",
+        "required": false,
+        "applicable_classes": [1001],
+        "description": "The name of the file involved in the activity.",
+        "source_examples": ["ObjectName", "file_name"]
+      },
+      {
+        "field_path": "file.path",
+        "field_type": "VARCHAR",
+        "required": false,
+        "applicable_classes": [1001],
+        "description": "The full path of the file involved in the activity.",
+        "source_examples": ["ObjectName", "file_path"]
+      },
+      {
+        "field_path": "file.type",
+        "field_type": "VARCHAR",
+        "required": false,
+        "applicable_classes": [1001],
+        "description": "The type of file object.",
+        "source_examples": ["ObjectType"]
+      },
+      {
+        "field_path": "auth.protocol",
+        "field_type": "VARCHAR",
+        "required": false,
+        "applicable_classes": [6003],
+        "description": "The authentication protocol used.",
+        "source_examples": ["AuthenticationPackageName", "auth_type"]
+      },
+      {
+        "field_path": "auth.service",
+        "field_type": "VARCHAR",
+        "required": false,
+        "applicable_classes": [6003],
+        "description": "The service or application being authenticated to.",
+        "source_examples": ["ServiceName", "service"]
+      },
+      {
+        "field_path": "dst_endpoint.hostname",
+        "field_type": "VARCHAR",
+        "required": false,
+        "applicable_classes": [6003],
+        "description": "The destination hostname for authentication events.",
+        "source_examples": ["WorkstationName", "hostname"]
+      },
+      {
+        "field_path": "status",
+        "field_type": "VARCHAR",
+        "required": false,
+        "applicable_classes": [1001, 3001, 3002, 4001, 6003],
+        "description": "The normalized status of the event (e.g. success, failure).",
+        "source_examples": ["Status", "conn_state", "sc-status"]
+      },
+      {
+        "field_path": "message",
+        "field_type": "VARCHAR",
+        "required": false,
+        "applicable_classes": [1001, 3001, 3002, 4001, 6003],
+        "description": "A human-readable description of the event.",
+        "source_examples": ["Message", "notice.msg"]
+      },
+      {
+        "field_path": "dns.query.name",
+        "field_type": "VARCHAR",
+        "required": false,
+        "applicable_classes": [3001],
+        "description": "The DNS query name.",
+        "source_examples": ["query"]
+      },
+      {
+        "field_path": "dns.query.type",
+        "field_type": "VARCHAR",
+        "required": false,
+        "applicable_classes": [3001],
+        "description": "The DNS query type (e.g. A, AAAA, MX).",
+        "source_examples": ["qtype_name"]
+      },
+      {
+        "field_path": "dns.answers",
+        "field_type": "VARCHAR[]",
+        "required": false,
+        "applicable_classes": [3001],
+        "description": "The DNS answer values.",
+        "source_examples": ["answers"]
+      },
+      {
+        "field_path": "tls.version",
+        "field_type": "VARCHAR",
+        "required": false,
+        "applicable_classes": [3001],
+        "description": "The TLS/SSL version negotiated.",
+        "source_examples": ["version"]
+      },
+      {
+        "field_path": "tls.cipher",
+        "field_type": "VARCHAR",
+        "required": false,
+        "applicable_classes": [3001],
+        "description": "The cipher suite negotiated.",
+        "source_examples": ["cipher"]
+      },
+      {
+        "field_path": "tls.server_name",
+        "field_type": "VARCHAR",
+        "required": false,
+        "applicable_classes": [3001],
+        "description": "The TLS SNI server name.",
+        "source_examples": ["server_name"]
+      }
+    ]
+  }
