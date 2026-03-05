@@ -1,74 +1,99 @@
-# tests/conftest.py
-# Shared pytest fixtures for all test modules.
-# See header comment in each testX file for what it covers.
-
-from __future__ import annotations
-
-from datetime import datetime, timezone
-from pathlib import Path
-
-import pytest
-
-CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
-OCSF_SCHEMA_PATH = str(CONFIG_DIR / "ocsf_schema.json")
-METRICS_PATH = str(CONFIG_DIR / "metrics.json")
-
-
-@pytest.fixture(scope="session")
-def ocsf_registry():
-    from loghunter.schema.ocsf_field_registry import OCSFFieldRegistry
-    return OCSFFieldRegistry(OCSF_SCHEMA_PATH)
+# ==============================================================================
+# loghunter/exceptions.py
+#
+# Central custom exception hierarchy for LogHunt.
+#
+# All application-specific exceptions live here so that:
+#   - Test assertions use specific types: pytest.raises(UnknownFieldError)
+#     rather than the broad built-in ValueError.
+#   - UI layers catch specific types and surface meaningful analyst messages.
+#   - Every exception has one definition, one location.
+#
+# All exceptions that subclass ValueError or RuntimeError remain catchable
+# by existing broad except blocks — no existing behaviour is broken.
+# ==============================================================================
 
 
-@pytest.fixture(scope="session")
-def metric_registry():
-    from loghunter.schema.metric_registry import MetricRegistry
-    return MetricRegistry(METRICS_PATH)
+class LogHuntError(Exception):
+    """Base class for all LogHunt application exceptions."""
 
 
-@pytest.fixture()
-def sqlite_layer(tmp_path):
-    from loghunter.engine.sqlite_layer import SQLiteLayer
-    layer = SQLiteLayer(str(tmp_path / "test_metadata.db"))
-    yield layer
-    layer.close()
+# --- Schema -------------------------------------------------------------------
+
+class SchemaError(LogHuntError):
+    """Raised when data violates the OCSF schema contract."""
 
 
-@pytest.fixture()
-def audit_logger(sqlite_layer):
-    from loghunter.audit.logger import AuditLogger
-    return AuditLogger(sqlite_layer)
+class UnknownFieldError(SchemaError, ValueError):
+    """
+    Raised by OCSFEvent when a kwarg field path is not registered in
+    OCSFFieldRegistry for the event's class_uid.
+
+    Per spec section 8: unknown fields raise ValueError at construction.
+    Subclasses ValueError so broad ValueError catches still work while
+    tests can assert on the specific type.
+    """
 
 
-@pytest.fixture()
-def tmp_parquet_path(tmp_path):
-    parquet_dir = tmp_path / "logs.parquet"
-    parquet_dir.mkdir()
-    return str(parquet_dir)
+class UnsupportedClassError(SchemaError, ValueError):
+    """
+    Raised when class_uid is not one of the five supported OCSF classes:
+    {1001, 3001, 3002, 4001, 6003}.
+    """
 
 
-@pytest.fixture()
-def make_ocsf_event(ocsf_registry):
-    from loghunter.schema.ocsf_event import OCSFEvent
+# --- Storage ------------------------------------------------------------------
 
-    def _factory(
-        class_uid: int = 6003,
-        activity_id: int = 1,
-        severity_id: int = 1,
-        time: datetime | None = None,
-        metadata_log_source: str = "test",
-        metadata_original_time: str = "2026-01-01T00:00:00Z",
-        **kwargs,
-    ) -> OCSFEvent:
-        return OCSFEvent(
-            class_uid=class_uid,
-            activity_id=activity_id,
-            severity_id=severity_id,
-            time=time or datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
-            metadata_log_source=metadata_log_source,
-            metadata_original_time=metadata_original_time,
-            registry=ocsf_registry,
-            **kwargs,
-        )
+class StorageError(LogHuntError):
+    """Raised when a storage operation cannot be completed."""
 
-    return _factory
+
+class PartitionNotFoundError(StorageError, ValueError):
+    """
+    Raised by QueryBuilder.build_sql when a QueryIntent references an
+    event class for which no Parquet partition exists yet.
+
+    The UI catches this specifically to surface:
+    "No data ingested yet for this event class."
+    """
+
+
+class ReplaySessionNotFoundError(StorageError, ValueError):
+    """
+    Raised by ReplayEngine and ParquetWriter when an operation references
+    a replay session_id that does not exist on disk.
+    """
+
+
+# --- Registration -------------------------------------------------------------
+
+class RegistrationError(LogHuntError):
+    """Raised when a required registration is missing."""
+
+
+class UnregisteredFormatError(RegistrationError, ValueError):
+    """
+    Raised by OCSFNormalizer.normalize when source_format has no
+    registered field mapping for the given class_uid.
+    """
+
+
+# --- Rules --------------------------------------------------------------------
+
+class RuleError(LogHuntError):
+    """Raised for Sigma rule lifecycle violations."""
+
+
+class RuleNotFoundError(RuleError, ValueError):
+    """
+    Raised by SigmaEngine when rule_id does not exist in the SQLite
+    rule store.
+    """
+
+
+class RuleNotConfirmedError(RuleError, ValueError):
+    """
+    Raised by SigmaEngine.export_rule when the rule exists but
+    analyst_confirmed is False.
+    Per spec section 20: only confirmed rules are exportable.
+    """
