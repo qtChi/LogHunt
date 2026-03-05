@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import pyarrow as pa
-import pyarrow.parquet as pq
+from pyarrow import parquet as pq
 
 from loghunter.audit.logger import AuditLogger
 from loghunter.exceptions import ReplaySessionNotFoundError

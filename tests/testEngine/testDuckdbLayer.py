@@ -47,7 +47,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pyarrow as pa
-import pyarrow.parquet as pq
+from pyarrow import parquet as pq
 import pytest
 
 from loghunter.engine.duckdb_layer import DuckDBLayer
